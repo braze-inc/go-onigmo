@@ -140,6 +140,7 @@ func (m *MatchResult) HasCaptureGroup(name string) bool {
 }
 
 func (re *Regexp) match(b []byte) bool {
+	re.freeMatchResult()
 	region := C.onig_region_new()
 	beginning, end := bytePointers(b)
 	defer free(beginning, end)
@@ -184,6 +185,7 @@ func (re *Regexp) MatchString(s string) bool {
 }
 
 func (re *Regexp) search(b []byte) bool {
+	re.freeMatchResult()
 	region := C.onig_region_new()
 	beginning, end := bytePointers(b)
 	searchBeginning := beginning
@@ -276,15 +278,32 @@ func (m *MatchResult) Get(s string) (string, error) {
 	return "", nil
 }
 
-// Free for Regexp
-func (re *Regexp) Free() {
-	C.onig_free(re.regex)
+// freeMatchResult releases the region held by the previous match/search, if any.
+func (re *Regexp) freeMatchResult() {
+	if re.matchResult != nil {
+		re.matchResult.Free()
+		re.matchResult = nil
+	}
 }
 
-// Free for MatchResult
+// Free for Regexp. Safe to call on a nil receiver and safe to call more than once.
+func (re *Regexp) Free() {
+	if re == nil {
+		return
+	}
+	re.freeMatchResult()
+	if re.regex != nil {
+		C.onig_free(re.regex)
+		re.regex = nil
+	}
+}
+
+// Free for MatchResult. Safe to call more than once.
 func (m *MatchResult) Free() {
-	if m.matched {
+	if m.region != nil {
 		C.onig_region_free(m.region, 1)
+		m.region = nil
+		m.matched = false
 	}
 }
 
