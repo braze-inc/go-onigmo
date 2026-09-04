@@ -2,6 +2,7 @@ package onigmo
 
 import (
 	"runtime"
+	"sync"
 	"syscall"
 	"testing"
 )
@@ -19,10 +20,16 @@ func peakRSSBytes(t *testing.T) int64 {
 	return ru.Maxrss * 1024 // KiB
 }
 
+// leakLimitBytes bounds the RSS growth of the second, measured batch of each
+// leak test. The first batch of the same size lets the Go allocator (and the
+// race detector's shadow memory, under -race) reach its plateau, so the second
+// batch only grows if C memory is leaking per iteration.
 const leakLimitBytes = 16 << 20
 
+const leakIterations = 200000
+
 // Regression: Compile + SearchString + Free must not leak the compiled regex
-// or the OnigRegion of a successful match (~1 KiB per iteration on old code).
+// or the OnigRegion of a successful match (~224 B per iteration on old code).
 func TestCompileSearchFreeDoesNotLeak(t *testing.T) {
 	run := func(n int) {
 		for i := 0; i < n; i++ {
@@ -36,12 +43,12 @@ func TestCompileSearchFreeDoesNotLeak(t *testing.T) {
 			re.Free()
 		}
 	}
-	run(1000)
+	run(leakIterations)
 	before := peakRSSBytes(t)
-	run(200000)
+	run(leakIterations)
 	growth := peakRSSBytes(t) - before
 	if growth > leakLimitBytes {
-		t.Fatalf("peak RSS grew by %d MiB across 200k compile/search/free cycles", growth>>20)
+		t.Fatalf("peak RSS grew by %d MiB across %d compile/search/free cycles", growth>>20, leakIterations)
 	}
 }
 
@@ -64,12 +71,12 @@ func TestRepeatedSearchDoesNotLeakRegions(t *testing.T) {
 			}
 		}
 	}
-	run(1000)
+	run(leakIterations)
 	before := peakRSSBytes(t)
-	run(250000)
+	run(leakIterations)
 	growth := peakRSSBytes(t) - before
 	if growth > leakLimitBytes {
-		t.Fatalf("peak RSS grew by %d MiB across 500k searches", growth>>20)
+		t.Fatalf("peak RSS grew by %d MiB across %d searches", growth>>20, 2*leakIterations)
 	}
 }
 
@@ -86,4 +93,26 @@ func TestFreeIsNilSafeAndIdempotent(t *testing.T) {
 	re.matchResult.Free()
 	re.Free()
 	re.Free()
+}
+
+// Concurrent searches on one Regexp must not double-free the previous match
+// region.
+func TestConcurrentSearchDoesNotDoubleFree(t *testing.T) {
+	re := MustCompile("^queue_(?<n>[0-9]+)$")
+	defer re.Free()
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 20000; i++ {
+				if !re.SearchString("queue_123") {
+					t.Error("expected a match")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

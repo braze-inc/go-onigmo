@@ -140,6 +140,9 @@ func (m *MatchResult) HasCaptureGroup(name string) bool {
 }
 
 func (re *Regexp) match(b []byte) bool {
+	re.mu.Lock()
+	defer re.mu.Unlock()
+
 	re.freeMatchResult()
 	region := C.onig_region_new()
 	beginning, end := bytePointers(b)
@@ -185,6 +188,9 @@ func (re *Regexp) MatchString(s string) bool {
 }
 
 func (re *Regexp) search(b []byte) bool {
+	re.mu.Lock()
+	defer re.mu.Unlock()
+
 	re.freeMatchResult()
 	region := C.onig_region_new()
 	beginning, end := bytePointers(b)
@@ -279,6 +285,7 @@ func (m *MatchResult) Get(s string) (string, error) {
 }
 
 // freeMatchResult releases the region held by the previous match/search, if any.
+// Callers must hold re.mu.
 func (re *Regexp) freeMatchResult() {
 	if re.matchResult != nil {
 		re.matchResult.Free()
@@ -291,6 +298,9 @@ func (re *Regexp) Free() {
 	if re == nil {
 		return
 	}
+	re.mu.Lock()
+	defer re.mu.Unlock()
+
 	re.freeMatchResult()
 	if re.regex != nil {
 		C.onig_free(re.regex)
