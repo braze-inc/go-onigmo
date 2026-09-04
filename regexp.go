@@ -120,6 +120,7 @@ func Match(pattern string, b []byte) bool {
 	if err != nil {
 		return false
 	}
+	defer re.Free()
 	return re.match(b)
 }
 
@@ -129,6 +130,7 @@ func MatchString(pattern string, s string) bool {
 	if err != nil {
 		return false
 	}
+	defer re.Free()
 	return re.MatchString(s)
 }
 
@@ -273,9 +275,13 @@ func (m *MatchResult) Get(s string) (string, error) {
 		return "", err
 	}
 
+	input := C.CString(m.input)
+	defer C.free(unsafe.Pointer(input))
+
 	for _, groupNum := range groupNums {
-		w := C.onigmo_helper_get(C.CString(m.input), m.region.beg, m.region.end, groupNum)
+		w := C.onigmo_helper_get(input, m.region.beg, m.region.end, groupNum)
 		word := C.GoString(w)
+		C.free(unsafe.Pointer(w))
 		if word != "" {
 			return word, nil
 		}

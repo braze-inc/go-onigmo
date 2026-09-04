@@ -116,3 +116,56 @@ func TestConcurrentSearchDoesNotDoubleFree(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Regression: Get must free the C copy of the input and the strndup'd capture
+// (~32 B per call on old code).
+func TestGetDoesNotLeak(t *testing.T) {
+	re := MustCompile("^queue_(?<n>[0-9]+)$")
+	defer re.Free()
+	if !re.SearchString("queue_123") {
+		t.Fatal("expected a match")
+	}
+
+	run := func(n int) {
+		for i := 0; i < n; i++ {
+			got, err := re.matchResult.Get("n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != "123" {
+				t.Fatalf("got %q, want %q", got, "123")
+			}
+		}
+	}
+	// Get leaked only ~32 B per call, so use enough calls to clear the cap.
+	n := leakIterations * 5
+	run(n)
+	before := peakRSSBytes(t)
+	run(n)
+	growth := peakRSSBytes(t) - before
+	if growth > leakLimitBytes {
+		t.Fatalf("peak RSS grew by %d MiB across %d Get calls", growth>>20, n)
+	}
+}
+
+// Regression: package-level Match/MatchString must free the regex they compile
+// (~1.2 KiB per call on old code).
+func TestPackageMatchDoesNotLeak(t *testing.T) {
+	run := func(n int) {
+		for i := 0; i < n; i++ {
+			if !MatchString("^queue_[0-9]+$", "queue_123") {
+				t.Fatal("expected a match")
+			}
+			if !Match("^queue_[0-9]+$", []byte("queue_123")) {
+				t.Fatal("expected a match")
+			}
+		}
+	}
+	run(leakIterations / 4)
+	before := peakRSSBytes(t)
+	run(leakIterations / 4)
+	growth := peakRSSBytes(t) - before
+	if growth > leakLimitBytes {
+		t.Fatalf("peak RSS grew by %d MiB across %d package-level matches", growth>>20, leakIterations/2)
+	}
+}
