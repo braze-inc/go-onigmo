@@ -120,6 +120,7 @@ func Match(pattern string, b []byte) bool {
 	if err != nil {
 		return false
 	}
+	defer re.Free()
 	return re.match(b)
 }
 
@@ -129,6 +130,7 @@ func MatchString(pattern string, s string) bool {
 	if err != nil {
 		return false
 	}
+	defer re.Free()
 	return re.MatchString(s)
 }
 
@@ -140,6 +142,10 @@ func (m *MatchResult) HasCaptureGroup(name string) bool {
 }
 
 func (re *Regexp) match(b []byte) bool {
+	re.mu.Lock()
+	defer re.mu.Unlock()
+
+	re.freeMatchResult()
 	region := C.onig_region_new()
 	beginning, end := bytePointers(b)
 	defer free(beginning, end)
@@ -184,6 +190,10 @@ func (re *Regexp) MatchString(s string) bool {
 }
 
 func (re *Regexp) search(b []byte) bool {
+	re.mu.Lock()
+	defer re.mu.Unlock()
+
+	re.freeMatchResult()
 	region := C.onig_region_new()
 	beginning, end := bytePointers(b)
 	searchBeginning := beginning
@@ -265,9 +275,13 @@ func (m *MatchResult) Get(s string) (string, error) {
 		return "", err
 	}
 
+	input := C.CString(m.input)
+	defer C.free(unsafe.Pointer(input))
+
 	for _, groupNum := range groupNums {
-		w := C.onigmo_helper_get(C.CString(m.input), m.region.beg, m.region.end, groupNum)
+		w := C.onigmo_helper_get(input, m.region.beg, m.region.end, groupNum)
 		word := C.GoString(w)
+		C.free(unsafe.Pointer(w))
 		if word != "" {
 			return word, nil
 		}
@@ -276,15 +290,36 @@ func (m *MatchResult) Get(s string) (string, error) {
 	return "", nil
 }
 
-// Free for Regexp
-func (re *Regexp) Free() {
-	C.onig_free(re.regex)
+// freeMatchResult releases the region held by the previous match/search, if any.
+// Callers must hold re.mu.
+func (re *Regexp) freeMatchResult() {
+	if re.matchResult != nil {
+		re.matchResult.Free()
+		re.matchResult = nil
+	}
 }
 
-// Free for MatchResult
+// Free for Regexp. Safe to call on a nil receiver and safe to call more than once.
+func (re *Regexp) Free() {
+	if re == nil {
+		return
+	}
+	re.mu.Lock()
+	defer re.mu.Unlock()
+
+	re.freeMatchResult()
+	if re.regex != nil {
+		C.onig_free(re.regex)
+		re.regex = nil
+	}
+}
+
+// Free for MatchResult. Safe to call more than once.
 func (m *MatchResult) Free() {
-	if m.matched {
+	if m.region != nil {
 		C.onig_region_free(m.region, 1)
+		m.region = nil
+		m.matched = false
 	}
 }
 
